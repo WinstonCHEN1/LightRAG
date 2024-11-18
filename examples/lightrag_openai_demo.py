@@ -2,7 +2,6 @@ import os
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete
-
 WORKING_DIR = "./dickens"
 
 if not os.path.exists(WORKING_DIR):

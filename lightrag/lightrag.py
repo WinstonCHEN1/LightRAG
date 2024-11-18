@@ -86,7 +86,15 @@ class LightRAG:
     entity_summary_to_max_tokens: int = 500
 
     # node embedding
-    node_embedding_algorithm: str = "node2vec"
+    node_embedding_algorithm: str = "gae"  # 默认嵌入算法
+    gae_params: dict = field(
+        default_factory=lambda: {
+            "hidden_channels": 64,
+            "embedding_dim": 1536,
+            "learning_rate": 0.01,
+            "epochs": 200,
+        }
+    )
     node2vec_params: dict = field(
         default_factory=lambda: {
             "dimensions": 1536,

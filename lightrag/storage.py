@@ -20,6 +20,12 @@ from .base import (
     BaseVectorStorage,
 )
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+from torch_geometric.utils import from_networkx
+
 
 @dataclass
 class JsonKVStorage(BaseKVStorage):
@@ -232,7 +238,7 @@ class NetworkXStorage(BaseGraphStorage):
             )
         self._graph = preloaded_graph or nx.Graph()
         self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
+            "gae": self._gae_embed,  # 添加 GAE 嵌入方法
         }
 
     async def index_done_callback(self):
@@ -288,14 +294,49 @@ class NetworkXStorage(BaseGraphStorage):
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
 
-    # @TODO: NOT USED
-    async def _node2vec_embed(self):
-        from graspologic import embed
+    async def _gae_embed(self):
+        """GAE-based node embedding."""
+        class GAE(nn.Module):
+            def __init__(self, in_channels, hidden_channels, out_channels):
+                super(GAE, self).__init__()
+                self.conv1 = GCNConv(in_channels, hidden_channels)
+                self.conv2 = GCNConv(hidden_channels, out_channels)
 
-        embeddings, nodes = embed.node2vec_embed(
-            self._graph,
-            **self.global_config["node2vec_params"],
-        )
+            def encode(self, x, edge_index):
+                x = self.conv1(x, edge_index)
+                x = F.relu(x)
+                z = self.conv2(x, edge_index)
+                return z
 
-        nodes_ids = [self._graph.nodes[node_id]["id"] for node_id in nodes]
-        return embeddings, nodes_ids
+            def decode(self, z):
+                return torch.sigmoid(torch.matmul(z, z.T))
+
+        data = from_networkx(self._graph)
+        if "features" in self.global_config:
+            data.x = torch.tensor(self.global_config["features"], dtype=torch.float32)
+        else:
+            data.x = torch.eye(self._graph.number_of_nodes(), dtype=torch.float32)
+
+        hidden_channels = self.global_config.get("hidden_channels", 32)
+        out_channels = self.global_config.get("embedding_dim", 16)
+        model = GAE(data.x.size(1), hidden_channels, out_channels)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        criterion = nn.BCELoss()
+
+        edge_index = data.edge_index
+        adj_label = (torch.matmul(data.x, data.x.T) > 0).float()
+
+        for epoch in range(200):
+            model.train()
+            optimizer.zero_grad()
+            z = model.encode(data.x, edge_index)
+            adj_pred = model.decode(z)
+            loss = criterion(adj_pred, adj_label)
+            loss.backward()
+            optimizer.step()
+
+        with torch.no_grad():
+            node_embeddings = model.encode(data.x, edge_index).cpu().numpy()
+
+        node_ids = list(self._graph.nodes())
+        return node_embeddings, node_ids
